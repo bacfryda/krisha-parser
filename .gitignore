@@ -1,0 +1,56 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Node.js
+wa-server/node_modules/
+wa-server/wa_auth_data/
+wa-server/wa_server.log
+wa-server/.wwebjs_cache/
+
+# PyInstaller build
+build/
+dist/
+*.spec
+
+# Сессии браузеров
+sessions/
+chrome_session/
+
+# База данных
+phones.db
+
+# Конфиг с ключами
+config.json
+
+# Логи и дебаг
+*.log
+app_output.log
+debug_*.html
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Старые сборки и архивы
+*.zip
+*.exe
+*.DDF
+KrishaParser_*/
+KrishaParserBot_*/
+installer_output/
+nuitka-crash-report.xml
+
+# Pytest
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Большой файл инсталлятора
+_installer_main.py
