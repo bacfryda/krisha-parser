@@ -2,8 +2,9 @@
 Скрипт сборки Krisha Parser Bot в инсталлятор.
 
 Шаг 1: PyInstaller → exe + _internal/
-Шаг 2: Копирование wa-server
-Шаг 3: Inno Setup → Setup.exe
+Шаг 2: Копирование wa-server + встроенный Node.js
+Шаг 3: Playwright browsers
+Шаг 4: Inno Setup скрипт
 
 Запуск: python build_release.py
 """
@@ -11,6 +12,9 @@ import subprocess
 import sys
 import os
 import shutil
+import urllib.request
+import zipfile
+import tempfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DIST = os.path.join(ROOT, "dist", "KrishaParser")
@@ -129,6 +133,48 @@ def step2_copy_wa_server():
 
     shutil.copytree(wa_src, wa_dst, ignore=ignore_fn)
     print(f"✅ wa-server скопирован ({wa_dst})")
+
+    # Встраиваем node.exe в wa-server
+    _bundle_node(wa_dst)
+
+
+NODE_VERSION = "22.16.0"  # LTS
+
+
+def _bundle_node(wa_dst: str):
+    """Скачивает node.exe (Windows x64) и кладёт в wa-server."""
+    node_dst = os.path.join(wa_dst, "node.exe")
+    if os.path.isfile(node_dst):
+        print("  node.exe уже есть, пропускаю")
+        return
+
+    zip_name = f"node-v{NODE_VERSION}-win-x64.zip"
+    url = f"https://nodejs.org/dist/v{NODE_VERSION}/{zip_name}"
+    print(f"  Скачиваю Node.js v{NODE_VERSION}...")
+
+    tmp = tempfile.mkdtemp()
+    zip_path = os.path.join(tmp, zip_name)
+    try:
+        urllib.request.urlretrieve(url, zip_path)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            # Ищем node.exe внутри архива
+            node_entry = None
+            for name in zf.namelist():
+                if name.endswith("/node.exe"):
+                    node_entry = name
+                    break
+            if not node_entry:
+                print("  ⚠️ node.exe не найден в архиве")
+                return
+            # Извлекаем только node.exe
+            with zf.open(node_entry) as src, open(node_dst, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        print(f"  ✅ node.exe встроен ({os.path.getsize(node_dst) // (1024*1024)} МБ)")
+    except Exception as e:
+        print(f"  ⚠️ Не удалось скачать Node.js: {e}")
+        print("  Пользователю потребуется установить Node.js вручную")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def step3_copy_playwright_browsers():

@@ -335,7 +335,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        node_exe = "node"
+        # Ищем встроенный node.exe рядом с wa-server, иначе системный
+        bundled_node = os.path.join(wa_dir, "node.exe")
+        node_exe = bundled_node if os.path.isfile(bundled_node) else "node"
 
         # Лог wa-server в файл для диагностики
         self._wa_log_path = os.path.join(wa_dir, "wa_server.log")
