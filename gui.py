@@ -759,7 +759,7 @@ class MainWindow(QMainWindow):
         self.side_tabs = QTabWidget()
         self.side_tabs.setObjectName("sideTabs")
         self.side_tabs.setMinimumWidth(200)
-        self.side_tabs.setMaximumWidth(400)
+        self.side_tabs.setMaximumWidth(350)
 
         self.log_text = QTextEdit()
         self.log_text.setObjectName("logText")
@@ -1729,6 +1729,12 @@ class MainWindow(QMainWindow):
 
             # Ресайзим Chrome (обновляет все дочерние окна)
             self._resize_browser(w, h + tb)
+
+            # Принудительный resize через 500мс — layout может быть ещё не финализирован
+            def _delayed_resize():
+                self._last_chrome_size = None  # сбросить кэш
+                self._resize_chrome()
+            QTimer.singleShot(500, _delayed_resize)
 
             # Таймер подгонки размера (редкий — основной ресайз через resizeEvent)
             self._chrome_resize_timer = QTimer()
