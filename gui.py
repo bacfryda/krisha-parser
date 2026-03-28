@@ -204,6 +204,12 @@ class MainWindow(QMainWindow):
         self.cfg = load_config()
         init_db()
 
+        # Информация об экране и DPI
+        screen_info = self._get_screen_info()
+        self._screen_info = screen_info
+        self._dpi_scale = screen_info["dpi_scale"]
+        self._initial_viewport = (screen_info["width"], screen_info["height"])
+
         # Состояние
         self._parsing = False
         self._parse_stop = False
@@ -1494,20 +1500,14 @@ class MainWindow(QMainWindow):
 
         listing = self._parse_listings[i]
         self._parse_index += 1
-        self.progress.setMaximum(total)
+        max_listings = self.cfg.get("krisha", {}).get("max_listings", 60)
+        self.progress.setMaximum(max_listings)
         self.progress.setValue(i + 1)
         url = listing["url"]
         title = listing.get("title", "")[:50]
 
         if is_url_parsed(url):
             self.log(f"({i+1}/{total}) >> Уже: {title}")
-            QTimer.singleShot(100, self._parse_next)
-            return
-
-        # Пропускаем застройщиков если включён фильтр
-        if self.cfg["krisha"].get("skip_developers", False) and listing.get("is_developer"):
-            self.log(f"({i+1}/{total}) >> Застройщик, пропуск: {title}")
-            mark_url_parsed(url)
             QTimer.singleShot(100, self._parse_next)
             return
 
@@ -1563,18 +1563,73 @@ class MainWindow(QMainWindow):
         self._refresh_phones()
 
     # ═══════════════════════════════════════════════════════════════
+    #  Экран и DPI
+    # ═══════════════════════════════════════════════════════════════
+
+    def _get_screen_info(self) -> dict:
+        """Возвращает информацию об экране: resolution, dpi_scale.
+
+        Fallback на {"width": 1200, "height": 900, "dpi_scale": 1.0}
+        при недоступном экране. Clamp dpi_scale: ≤0 → 1.0, >4.0 → 4.0.
+        """
+        fallback = {"width": 1200, "height": 900, "dpi_scale": 1.0}
+        try:
+            screen = QApplication.primaryScreen()
+            if screen is None:
+                return fallback
+            geo = screen.availableGeometry()
+            dpi_scale = screen.devicePixelRatio()
+            # Clamp dpi_scale
+            if dpi_scale <= 0:
+                dpi_scale = 1.0
+            elif dpi_scale > 4.0:
+                dpi_scale = 4.0
+            return {
+                "width": geo.width(),
+                "height": geo.height(),
+                "dpi_scale": dpi_scale,
+            }
+        except Exception:
+            return fallback
+
+    def _compute_toolbar_offset(self) -> int:
+        """Вычисляет toolbar offset с учётом DPI scale.
+
+        Читает toolbar_offset из self.cfg (default 155).
+        Валидация: если не число или вне диапазона 50–300, используется 155.
+        Возвращает int(base_offset * self._dpi_scale).
+        """
+        base_offset = self.cfg.get("toolbar_offset", 155)
+        try:
+            base_offset = int(base_offset)
+        except (TypeError, ValueError):
+            base_offset = 155
+        if base_offset < 50 or base_offset > 300:
+            base_offset = 155
+        return int(base_offset * self._dpi_scale)
+
+    # ═══════════════════════════════════════════════════════════════
     #  Встраивание Chrome (поиск по уникальному заголовку окна)
     # ═══════════════════════════════════════════════════════════════
 
     def _launch_chrome_bg(self):
         """Запускает Playwright Chrome в фоновом потоке, затем встраивает."""
+        # Вычисляем viewport до запуска фонового потока (GUI-поток)
+        vw, vh = self._initial_viewport
+        bs = self.browser_stack
+        if bs.width() > 50 and bs.height() > 50:
+            vw, vh = bs.width(), bs.height()
+        else:
+            vw = int(self._screen_info["width"] * 0.75)
+            vh = int(self._screen_info["height"] * 0.75)
+
         def _bg():
             try:
                 from parser_playwright import _run_in_pw_thread, _load_cookies
 
                 def _pw_init():
                     from parser_playwright import _get_driver, CHROME_WINDOW_MARKER as marker
-                    driver = _get_driver()
+                    driver = _get_driver(viewport_width=vw, viewport_height=vh)
                     driver.goto("https://krisha.kz/prodazha/kvartiry/")
                     import time as _t
                     _t.sleep(2)
@@ -1703,46 +1758,56 @@ class MainWindow(QMainWindow):
             # Встраиваем в контейнер
             user32.SetParent(chrome_hwnd, host_hwnd)
 
-            w = self.browser_stack.width()
-            h = self.browser_stack.height()
-            tb = 155  # скрываем тулбар Chrome (вкладки + адресная строка)
-
-            # Применяем стиль + размер одним вызовом SetWindowPos
-            HWND_TOP = 0
-            SWP_SHOWWINDOW = 0x0040
-            user32.SetWindowPos(
-                chrome_hwnd, HWND_TOP,
-                0, -tb, max(w, 100), max(h, 100) + tb,
-                SWP_FRAMECHANGED | SWP_SHOWWINDOW,
-            )
-
             self._chrome_hwnd = chrome_hwnd
             self._chrome_embedded = True
-            self.log(f"  Chrome встроен (host: {self._chrome_host.width()}x{self._chrome_host.height()}, stack: {w}x{h})")
 
-            # Скрываем оверлей загрузки
-            self._hide_loading_overlay()
+            # Ждём layout finalization перед MoveWindow (showMaximized может не
+            # успеть обновить геометрию виджетов к этому моменту)
+            def _finalize_embed():
+                w = self.browser_stack.width()
+                h = self.browser_stack.height()
+                tb = self._compute_toolbar_offset()
+                dpi = self._dpi_scale
+                pw = int(w * dpi)   # физические пиксели для Win32
+                ph = int(h * dpi)
 
-            # Передаём фокус Chrome и устанавливаем хук
-            QTimer.singleShot(500, self._focus_chrome)
-            self._install_chrome_focus_hook()
+                # Применяем стиль + размер одним вызовом SetWindowPos
+                HWND_TOP = 0
+                SWP_SHOWWINDOW = 0x0040
+                user32.SetWindowPos(
+                    chrome_hwnd, HWND_TOP,
+                    0, -tb, max(pw, 100), max(ph, 100) + tb,
+                    SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                )
 
-            # Ресайзим Chrome (обновляет все дочерние окна)
-            self._resize_browser(w, h + tb)
+                self.log(f"  Chrome встроен (host: {self._chrome_host.width()}x{self._chrome_host.height()}, stack: {w}x{h})")
 
-            # Принудительный resize через 500мс — layout может быть ещё не финализирован
-            def _delayed_resize():
-                self._last_chrome_size = None  # сбросить кэш
-                self._resize_chrome()
-            QTimer.singleShot(500, _delayed_resize)
+                # Скрываем оверлей загрузки только после применения корректных размеров
+                self._hide_loading_overlay()
 
-            # Таймер подгонки размера (редкий — основной ресайз через resizeEvent)
-            self._chrome_resize_timer = QTimer()
-            self._chrome_resize_timer.timeout.connect(self._resize_chrome)
-            self._chrome_resize_timer.start(2000)
+                # Передаём фокус Chrome и устанавливаем хук
+                QTimer.singleShot(500, self._focus_chrome)
+                self._install_chrome_focus_hook()
 
-            # Проверяем авторизацию на krisha.kz через 2 сек
-            QTimer.singleShot(2000, self._check_krisha_auth)
+                # Ресайзим Chrome (обновляет все дочерние окна)
+                self._resize_browser(pw, ph + tb)
+
+                # Принудительный resize через 500мс — layout может быть ещё не финализирован
+                def _delayed_resize():
+                    self._last_chrome_size = None  # сбросить кэш
+                    self._resize_chrome()
+                QTimer.singleShot(500, _delayed_resize)
+
+                # Таймер подгонки размера (редкий — основной ресайз через resizeEvent)
+                self._chrome_resize_timer = QTimer()
+                self._chrome_resize_timer.timeout.connect(self._resize_chrome)
+                self._chrome_resize_timer.start(2000)
+
+                # Проверяем авторизацию на krisha.kz через 2 сек
+                QTimer.singleShot(2000, self._check_krisha_auth)
+
+            # Даём Qt event loop время финализировать layout
+            QTimer.singleShot(50, _finalize_embed)
 
         except Exception as e:
             self.log(f"  -- Не удалось встроить Chrome: {e}")
@@ -1751,23 +1816,45 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(1000, self._embed_chrome)
 
     def _resize_browser(self, w, h):
-        """Ресайзит Chrome через Win32 MoveWindow (относительно родителя) + Playwright viewport."""
-        tb = 155
+        """Ресайзит Chrome через Win32 MoveWindow + планирует viewport.
+        
+        w, h — физические пиксели (уже с учётом DPI).
+        """
+        tb = self._compute_toolbar_offset()
         hwnd = self._chrome_hwnd
         if hwnd:
             try:
                 import ctypes
-                # MoveWindow позиционирует относительно родительского окна — работает на любом мониторе
-                ctypes.windll.user32.MoveWindow(hwnd, 0, -tb, max(w, 100), max(h, 100), True)
+                ctypes.windll.user32.MoveWindow(hwnd, 0, -tb, max(w, 100), max(h, 100) + tb, True)
             except Exception:
                 pass
-        # Playwright resize обновляет внутренний viewport Chrome
+        # Viewport в логических пикселях для Playwright
+        dpi = self._dpi_scale
+        lw = int(w / dpi) if dpi > 0 else w
+        lh = int(h / dpi) if dpi > 0 else h
+        self._schedule_viewport(lw, lh + tb)
+
+    def _schedule_viewport(self, w, h):
+        """Планирует обновление Playwright viewport с задержкой."""
+        self._pending_viewport = (max(w, 100), max(h, 100))
+        if not hasattr(self, '_viewport_timer'):
+            self._viewport_timer = QTimer()
+            self._viewport_timer.setSingleShot(True)
+            self._viewport_timer.timeout.connect(self._apply_viewport)
+        self._viewport_timer.start(300)
+
+    def _apply_viewport(self):
+        """Применяет Playwright viewport после окончания ресайза."""
+        vp = getattr(self, '_pending_viewport', None)
+        if not vp:
+            return
+        w, h = vp
         def _bg():
             try:
                 from parser_playwright import _run_in_pw_thread, _page
                 def _do_resize():
                     if _page:
-                        _page.set_viewport_size({"width": w, "height": h})
+                        _page.set_viewport_size({"width": max(w, 100), "height": max(h, 100)})
                 _run_in_pw_thread(_do_resize)
             except Exception:
                 pass
@@ -1780,12 +1867,23 @@ class MainWindow(QMainWindow):
         w = self.browser_stack.width()
         h = self.browser_stack.height()
         if w > 50 and h > 50:
-            tb = 155
+            tb = self._compute_toolbar_offset()
+            dpi = self._dpi_scale
+            pw = int(w * dpi)   # физические пиксели для Win32
+            ph = int(h * dpi)
+            try:
+                import ctypes
+                ctypes.windll.user32.MoveWindow(
+                    self._chrome_hwnd, 0, -tb,
+                    max(pw, 100), max(ph, 100) + tb, True
+                )
+            except Exception:
+                pass
+            # Viewport в логических пикселях (Playwright сам учитывает DPI)
             new_size = (w, h + tb)
-            if getattr(self, '_last_chrome_size', None) == new_size:
-                return
-            self._last_chrome_size = new_size
-            self._resize_browser(w, h + tb)
+            if getattr(self, '_last_chrome_size', None) != new_size:
+                self._last_chrome_size = new_size
+                self._schedule_viewport(w, h + tb)
 
     # ═══════════════════════════════════════════════════════════════
     #  Режим 2: Рассылка (через wa-server)
@@ -3071,10 +3169,10 @@ class MainWindow(QMainWindow):
         f1.addRow("Цена:", pw)
 
         self.f_pages = QSpinBox()
-        self.f_pages.setRange(1, 20)
-        self.f_pages.setValue(k.get("max_pages", 3))
+        self.f_pages.setRange(1, 500)
+        self.f_pages.setValue(k.get("max_listings", 60))
         self.f_pages.setFixedWidth(60)
-        f1.addRow("Страниц:", self.f_pages)
+        f1.addRow("Объявлений:", self.f_pages)
 
         grid.addWidget(g1)
 
@@ -3258,7 +3356,7 @@ class MainWindow(QMainWindow):
         k["rooms"] = [v for v, cb in self.f_rooms.items() if cb.isChecked()]
         k["price_from"] = self.f_price_from.text().strip()
         k["price_to"] = self.f_price_to.text().strip()
-        k["max_pages"] = self.f_pages.value()
+        k["max_listings"] = self.f_pages.value()
         k["has_photo"] = self.f_photo.isChecked()
         k["novostroiki"] = self.f_novo.isChecked()
         k["from_owner"] = self.f_owner.isChecked()

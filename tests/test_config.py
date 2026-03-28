@@ -52,6 +52,6 @@ class TestLoadSaveConfig:
         k = DEFAULT_CONFIG["krisha"]
         assert "deal_type" in k
         assert "rooms" in k
-        assert "max_pages" in k
+        assert "max_listings" in k
         assert isinstance(k["rooms"], list)
-        assert isinstance(k["max_pages"], int)
+        assert isinstance(k["max_listings"], int)

@@ -1,6 +1,9 @@
 """Krisha Parser Bot — точка входа."""
 import sys
 import os
+from datetime import datetime
+
+EXPIRATION_DATE = datetime(2026, 4, 30, 23, 59, 59)
 
 
 def _first_run_setup():
@@ -115,10 +118,99 @@ def _first_run_setup():
     splash.deleteLater()
 
 
+def check_expiration() -> bool:
+    """Проверяет срок действия приложения.
+
+    Возвращает False если срок не истёк.
+    Если срок истёк — показывает диалог и завершает процесс с кодом 1.
+    """
+    if datetime.now() <= EXPIRATION_DATE:
+        return False
+
+    # Срок истёк — пытаемся показать GUI-диалог
+    try:
+        from PyQt6.QtWidgets import QApplication, QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QWidget
+        from PyQt6.QtCore import Qt
+
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+
+        dlg = QDialog()
+        dlg.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        dlg.setModal(True)
+
+        outer = QWidget(dlg)
+        outer.setStyleSheet(
+            "QWidget { background: #1e1e2e; border: 1px solid #45475a; border-radius: 10px; }"
+        )
+        dlg_root = QVBoxLayout(dlg)
+        dlg_root.setContentsMargins(0, 0, 0, 0)
+        dlg_root.addWidget(outer)
+
+        lay = QVBoxLayout(outer)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(16)
+
+        lbl_title = QLabel("Срок действия истёк")
+        lbl_title.setStyleSheet(
+            "color: #cdd6f4; font-size: 15px; font-weight: bold; background: transparent; border: none;"
+        )
+        lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(lbl_title)
+
+        lbl_text = QLabel(
+            "Срок действия приложения истёк 30.04.2026.\n"
+            "Дальнейшая работа невозможна."
+        )
+        lbl_text.setStyleSheet(
+            "color: #a6adc8; font-size: 12px; background: transparent; border: none;"
+        )
+        lbl_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_text.setWordWrap(True)
+        lay.addWidget(lbl_text)
+
+        btn_ok = QPushButton("OK")
+        btn_ok.setFixedHeight(34)
+        btn_ok.setFixedWidth(120)
+        btn_ok.setStyleSheet(
+            "QPushButton { background: #00a884; color: #ffffff; border: none;"
+            "              border-radius: 6px; font-size: 12px; font-weight: bold; }\n"
+            "QPushButton:hover { background: #06cf9c; }"
+        )
+        btn_ok.clicked.connect(dlg.accept)
+
+        btn_wrap = QHBoxLayout()
+        btn_wrap.addStretch()
+        btn_wrap.addWidget(btn_ok)
+        btn_wrap.addStretch()
+        lay.addLayout(btn_wrap)
+
+        dlg.setFixedWidth(360)
+        dlg.adjustSize()
+
+        # Центрирование на экране
+        screen = app.primaryScreen().geometry()
+        dlg.move(
+            (screen.width() - dlg.width()) // 2,
+            (screen.height() - dlg.height()) // 2,
+        )
+
+        dlg.exec()
+        sys.exit(1)
+
+    except Exception:
+        print("Срок действия приложения истёк (30.04.2026). Запуск невозможен.", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     # Первоначальная настройка при frozen-запуске
     if getattr(sys, 'frozen', False):
         _first_run_setup()
+
+    check_expiration()
 
     if "--cli" in sys.argv:
         # CLI режим (оставлен как fallback)

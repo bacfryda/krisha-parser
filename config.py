@@ -93,7 +93,7 @@ DEFAULT_CONFIG = {
         "toilet": [],
         "phone_line": [],
         "text_search": "",
-        "max_pages": 3,
+        "max_listings": 60,
     },
     "whatsapp": {
         "phone_number": "",
@@ -114,6 +114,15 @@ DEFAULT_CONFIG = {
 }
 
 
+def _migrate_max_pages(cfg: dict):
+    """Миграция max_pages → max_listings."""
+    k = cfg.get("krisha", {})
+    if "max_pages" in k and "max_listings" not in k:
+        k["max_listings"] = k.pop("max_pages") * 20
+    elif "max_pages" in k:
+        del k["max_pages"]
+
+
 def load_config() -> dict:
     cfg = _deep_copy(DEFAULT_CONFIG)
     if os.path.exists(CONFIG_PATH):
@@ -124,6 +133,7 @@ def load_config() -> dict:
             _deep_merge(cfg, saved)
         except (json.JSONDecodeError, IOError):
             pass
+    _migrate_max_pages(cfg)
     return cfg
 
 

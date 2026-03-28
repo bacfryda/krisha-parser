@@ -264,7 +264,7 @@ def _scroll_to(page: Page, locator_or_selector):
 # ─── Драйвер ──────────────────────────────────────────────────
 
 @pw_thread
-def _get_driver() -> Page:
+def _get_driver(viewport_width: int = 1200, viewport_height: int = 900) -> Page:
     """Создаёт или возвращает существующий Playwright Page."""
     global _playwright, _browser, _context, _page, _driver
 
@@ -287,7 +287,7 @@ def _get_driver() -> Page:
             "--disable-popup-blocking",
             "--lang=ru-RU,ru",
             "--window-position=-10000,-10000",
-            "--window-size=1200,900",
+            f"--window-size={viewport_width},{viewport_height}",
             "--disable-extensions",
         ],
     )
@@ -297,7 +297,7 @@ def _get_driver() -> Page:
     _context = _browser.new_context(
         storage_state=storage,
         locale="ru-RU",
-        viewport={"width": 1200, "height": 900},
+        viewport={"width": viewport_width, "height": viewport_height},
     )
     _context.set_default_timeout(45000)
 
@@ -1432,16 +1432,12 @@ def _collect_cards(page: Page) -> list[dict]:
                 if price_el:
                     price = price_el.get_text(strip=True)
 
-                # Определяем застройщика — метка "Новостройка" (зелёный бейдж)
-                parent_text = parent.get_text(separator=" ", strip=True).lower()
-                if "новостройка" in parent_text:
-                    is_developer = True
-
-                # Проверяем бейджи/метки с классами
-                for badge in parent.select("[class*='badge'], [class*='label'], [class*='tag'], "
-                                          "[class*='novo'], [class*='new-build']"):
-                    badge_text = badge.get_text(strip=True).lower()
-                    if "новостройка" in badge_text or "новостройки" in badge_text:
+                # Определяем застройщика
+                # На krisha.kz у застройщиков есть элемент с текстом "Новостройка"
+                # (отдельный span/div, не часть описания квартиры)
+                for span in parent.find_all(["span", "div", "a"]):
+                    span_text = span.get_text(strip=True)
+                    if span_text == "Новостройка":
                         is_developer = True
                         break
 
@@ -1463,8 +1459,9 @@ def get_listings(cfg: dict, log_fn=None, stop_flag=None,
     Открывает krisha.kz, кликает фильтры как человек, собирает карточки.
     """
     page = _get_driver()
-    max_pages = cfg["krisha"].get("max_pages", 3)
     k = cfg["krisha"]
+    max_listings = k.get("max_listings", 60)
+    skip_developers = k.get("skip_developers", False)
     listings = []
 
     # Определяем базовый URL (тип сделки + регион)
@@ -1551,17 +1548,35 @@ def get_listings(cfg: dict, log_fn=None, stop_flag=None,
 
     # Собираем карточки с первой страницы
     cards = _collect_cards(page)
+    raw_count = len(cards)
+    if skip_developers:
+        before = len(cards)
+        cards = [c for c in cards if not c.get("is_developer")]
+        skipped = before - len(cards)
+        if skipped and log_fn:
+            log_fn(f"  Пропущено застройщиков: {skipped}")
     if cards:
         listings.extend(cards)
         if log_fn:
-            log_fn(f"  Страница 1/{max_pages}: {len(cards)} карточек")
-    else:
+            log_fn(f"  Страница 1: собрано {len(listings)}/{max_listings} объявлений")
+    elif raw_count == 0:
         if log_fn:
             log_fn("  Страница 1: объявления не найдены")
         return listings
+    else:
+        if log_fn:
+            log_fn("  Страница 1: все отфильтрованы, продолжаю...")
 
-    # Остальные страницы
-    for page_num in range(2, max_pages + 1):
+    if len(listings) >= max_listings:
+        listings = listings[:max_listings]
+        return listings
+
+    # Остальные страницы (макс 50 страниц для защиты от бесконечного цикла)
+    page_num = 1
+    max_pages_safety = 50
+    while page_num < max_pages_safety:
+        page_num += 1
+
         if stop_flag and stop_flag():
             break
 
@@ -1589,15 +1604,31 @@ def get_listings(cfg: dict, log_fn=None, stop_flag=None,
                     log_fn(f"  Кол-во изменилось: {expected_count} -> {current_count}")
 
         cards = _collect_cards(page)
+        raw_count = len(cards)
+        if skip_developers:
+            before = len(cards)
+            cards = [c for c in cards if not c.get("is_developer")]
+            skipped = before - len(cards)
+            if skipped and log_fn:
+                log_fn(f"  Пропущено застройщиков: {skipped}")
         if cards:
             listings.extend(cards)
             if log_fn:
-                log_fn(f"  Страница {page_num}/{max_pages}: {len(cards)} карточек")
-        else:
+                log_fn(f"  Страница {page_num}: собрано {len(listings)}/{max_listings} объявлений")
+            if len(listings) >= max_listings:
+                listings = listings[:max_listings]
+                break
+        elif raw_count == 0:
+            # Страница реально пустая — больше объявлений нет
             if log_fn:
                 log_fn(f"  Страница {page_num}: пусто")
             break
+        else:
+            # Все карточки отфильтрованы — продолжаем на следующую страницу
+            if log_fn:
+                log_fn(f"  Страница {page_num}: все отфильтрованы, продолжаю...")
 
+    listings = listings[:max_listings]
     return listings
 
 
