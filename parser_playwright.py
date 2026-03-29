@@ -862,8 +862,9 @@ def _fill_input(page: Page, field_name: str, value, log_fn=None):
         return
     try:
         el = None
-        # По id
-        el = page.query_selector(f'#{field_name}')
+        # По id (экранируем спецсимволы CSS)
+        esc = _css_escape(field_name)
+        el = page.query_selector(f'#{esc}')
         if not el:
             el = page.query_selector(f'[name="{field_name}"]')
         if not el:
@@ -907,7 +908,7 @@ def _set_checkbox(page: Page, field_name: str, should_check: bool, log_fn=None):
             if should_check and not is_checked:
                 # Кликаем по label (не по скрытому input)
                 try:
-                    label = page.query_selector(f'label[for="{field_name}-checkbox-0"]')
+                    label = page.query_selector(f'label[for="{esc}-checkbox-0"]')
                     if label:
                         label.scroll_into_view_if_needed()
                         label.click()
@@ -2087,14 +2088,22 @@ def extract_phone(listing_url: str, log_fn=None,
             if wait_sec > 0:
                 if log_fn:
                     log_fn(f"  -- Rate-limit: жду {wait_sec} сек перед кликом...")
-                time.sleep(wait_sec)
+                # Прерываемый sleep — проверяем stop_flag каждую секунду
+                for _ in range(wait_sec):
+                    if stop_flag and stop_flag():
+                        return None
+                    time.sleep(1)
         # Кулдаун между попытками
         elapsed = time.time() - _last_captcha_solve_time
         if _last_captcha_solve_time > 0 and elapsed < _CAPTCHA_COOLDOWN_SEC:
             wait_sec = int(_CAPTCHA_COOLDOWN_SEC - elapsed)
             if log_fn:
                 log_fn(f"  -- Кулдаун: жду {wait_sec} сек перед кликом...")
-            time.sleep(_CAPTCHA_COOLDOWN_SEC - elapsed)
+            # Прерываемый sleep
+            for _ in range(max(wait_sec, 1)):
+                if stop_flag and stop_flag():
+                    return None
+                time.sleep(1)
 
         # ШАГ 4: Ищем кнопку "Показать телефон"
         if stop_flag and stop_flag():
